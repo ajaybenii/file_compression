@@ -38,6 +38,7 @@ async def compress_image(input_path: str, output_path: str, target_size: int, qu
         # If quality reduction isn't enough, try resizing
         scale_factor = 0.9  # Reduce dimensions by 10% each iteration
         for _ in range(3):  # Try up to 3 resizing iterations
+            compressed_size = await get_file_size(temp_output)  # Check size from last quality attempt
             if compressed_size <= target_max:
                 break
             width, height = img.size
@@ -132,10 +133,9 @@ async def compress_images_in_pdf(input_path: str, output_path: str, target_size:
         shutil.move(temp_output, output_path)
     return False
 
-async def convert_pages_to_images(input_path: str, temp_dir: str, output_path: str, target_size: int, quality: int = 90, dpi: int = 800, page_count: int = 1) -> list[str]:
+async def convert_pages_to_images(input_path: str, temp_dir: str, output_path: str, target_size: int, quality: int = 95, dpi: int = 700, page_count: int = 1) -> list[str]:
     """Convert each PDF page to a JPEG image (fallback), adjust based on target size."""
     try:
-        # Adjust quality and DPI based on page count and target size
         quality_steps = [quality, max(60, quality - 20), max(30, quality - 40)]
         dpi_steps = [dpi, max(600, dpi - 300), max(300, dpi - 600)]
         if page_count > 15:
@@ -173,7 +173,7 @@ async def convert_pages_to_images(input_path: str, temp_dir: str, output_path: s
                     pdf.close()
                     shutil.move(temp_pdf, output_path)
                     return image_paths
-            safe_unlink(temp_pdf)
+        # safe_unlink(temp_pdf)
 
         pdf.close()
         return image_paths  # Return the last attempt's image paths
@@ -215,12 +215,15 @@ async def get_file_size(file_path: str) -> int:
     """Get file size in bytes."""
     return os.path.getsize(file_path)
 
-def safe_unlink(file_path: str, max_attempts: int = 3, delay: float = 0.5):
-    """Safely delete a file with retry mechanism for Windows."""
+def safe_cleanup(file_path: str, max_attempts: int = 3, delay: float = 0.5):
+    """Safely delete a file or directory with retry mechanism."""
     for attempt in range(max_attempts):
         try:
             if os.path.exists(file_path):
-                os.unlink(file_path)
+                if os.path.isdir(file_path):
+                    shutil.rmtree(file_path, ignore_errors=True)
+                else:
+                    os.unlink(file_path)
             return
         except PermissionError as e:
             logger.warning(f"Attempt {attempt + 1}/{max_attempts} to delete {file_path} failed: {str(e)}")
@@ -234,7 +237,7 @@ def safe_unlink(file_path: str, max_attempts: int = 3, delay: float = 0.5):
 def cleanup_files(file_paths: list[str], background_tasks: BackgroundTasks):
     """Schedule file cleanup using BackgroundTasks."""
     for file_path in file_paths:
-        background_tasks.add_task(safe_unlink, file_path)
+        background_tasks.add_task(safe_cleanup, file_path)
 
 @app.post("/compress-file/")
 async def compress_file_endpoint(file: UploadFile, background_tasks: BackgroundTasks, quality: int = 95):
@@ -296,7 +299,7 @@ async def compress_file_endpoint(file: UploadFile, background_tasks: BackgroundT
                     logger.info("Size exceeds target, falling back to image-based compression")
                 
                 temp_output = tempfile.mktemp(suffix='.pdf')
-                image_paths = await convert_pages_to_images(input_path, temp_dir, temp_output, target_size, quality=quality, dpi=800, page_count=page_count)
+                image_paths = await convert_pages_to_images(input_path, temp_dir, temp_output, target_size, quality=quality, dpi=700, page_count=page_count)
                 if not image_paths:
                     raise HTTPException(status_code=500, detail="Failed to convert PDF pages to images")
 
